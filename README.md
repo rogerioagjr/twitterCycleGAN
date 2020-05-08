@@ -1,1 +1,1 @@
-This is the final project of 6.864 - Advanced Natural Language Processing (MIT) by Rogerio A. GUimaraes Jr.
+This is the final project of 6.864 - Advanced Natural Language Processing (MIT) by Rogerio A. Guimaraes Jr.

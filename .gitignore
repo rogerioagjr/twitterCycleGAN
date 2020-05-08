@@ -1,1 +1,11 @@
 venv
+data/BarackObama.csv
+data/BarackObama.json
+data/BernieSanders.csv
+data/BernieSanders.json
+data/realDonaldTrump.csv
+data/realDonaldTrump.json
+data/realdonaldtrump.ndjson
+data/tweets.csv
+getTweets.py
+makeDataset.py
