@@ -9,3 +9,4 @@ data/realdonaldtrump.ndjson
 data/tweets.csv
 getTweets.py
 makeDataset.py
+.idea/*
