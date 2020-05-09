@@ -223,6 +223,8 @@ def save_model(model_name, model_params, model_kwargs):
     with open(kwargs_path, 'w') as kwargs_file:
         json.dump(model_kwargs, kwargs_file, sort_keys=True, indent=4)
 
+    print(model_name, 'saved')
+
 
 def load_model(model_name, device):
 
@@ -237,7 +239,7 @@ def load_model(model_name, device):
     model.load_state_dict(torch.load(params_path))
     model.eval()
 
-    print('model loaded with device', str(model.device))
+    print(model_name, 'loaded with device', str(model.device))
 
 
 def test_model(model_name, device):
