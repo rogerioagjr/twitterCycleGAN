@@ -11,6 +11,8 @@ from torchtext.data.utils import get_tokenizer
 import time
 import pandas as pd
 
+import json
+
 import sys
 
 class PositionalEncoding(nn.Module):
@@ -82,7 +84,7 @@ class Transformer(nn.Module):
         return output
 
 
-def train(device):
+def train_model(model_name, device):
 
     ################### prepare the data ###################
 
@@ -199,8 +201,50 @@ def train(device):
     print('| End of training | test loss {:5.2f} | test ppl {:8.2f}'.format(test_loss, math.exp(test_loss)))
     print('=' * 89)
 
+    ################ saving the model ################
+
+    model_params = model.state_dict()
+
+    model_kwargs = {'n_words': n_words, 'embedded_size': embedded_size, 'n_heads': n_heads, 'n_hidden': n_hidden,
+              'n_layers': n_layers, 'dropout': dropout}
+
+    save_model(model_name, model_params, model_kwargs)
+
     return best_model
 
+def save_model(model_name, model_params, model_kwargs):
+
+    params_path = 'models/' + model_name + '_params.pt'
+
+    torch.save(model_params, params_path)
+
+    kwargs_path = 'models/' + model_name + '_kwargs.json'
+
+    with open(kwargs_path, 'w') as kwargs_file:
+        json.dump(model_kwargs, kwargs_file, sort_keys=True, indent=4)
+
+
+def load_model(model_name, device):
+
+    kwargs_path = 'models/' + model_name + '_kwargs.json'
+    with open(kwargs_path, 'r') as kwargs_file:
+        model_kwargs = json.load(kwargs_file)
+
+    model = Transformer(**model_kwargs).to(device)
+
+    params_path = 'models/' + model_name + '_params.pt'
+
+    model.load_state_dict(torch.load(params_path))
+    model.eval()
+
+    print('model loaded with device', str(model.device))
+
+
+def test_model(model_name, device):
+
+    model = load_model(model_name, device)
+
+    print(model.state_dict())
 
 if __name__ == "__main__":
 
@@ -214,6 +258,11 @@ if __name__ == "__main__":
     mode = sys.argv[1]
 
     if mode == 'train':
-        model = train(device=device)
+        model_name = sys.argv[2]
+        model = train_model(model_name=model_name, device=device)
+
+    if mode == 'test':
+        model_name = sys.argv[2]
+        test_model(model_name=model_name, device=device)
 
 
