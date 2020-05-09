@@ -67,7 +67,8 @@ class Transformer(nn.Module):
 
     def forward(self, src):
         if self.src_mask is None or self.src_mask.size(0) != len(src):
-            mask = self._generate_square_mask_(len(src)).to(self.device)
+            device = src.device
+            mask = self._generate_square_mask_(len(src)).to(device)
             self.src_mask = mask
 
         src_embeddings = self.encoder(src) * math.sqrt(self.embedded_size)
