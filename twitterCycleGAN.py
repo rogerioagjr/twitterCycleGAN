@@ -158,7 +158,7 @@ def train(device):
                 total_loss = 0
                 start_time = time.time()
 
-    def evaluate_epoch(eval_model, data_source):
+    def evaluate(eval_model, data_source):
         eval_model.eval()
         total_loss = 0
         with torch.no_grad():
@@ -178,7 +178,7 @@ def train(device):
     for epoch in range(1, epochs + 1):
         epoch_start_time = time.time()
         train_epoch(model, train_data)
-        val_loss = evaluate_epoch(model, val_data)
+        val_loss = evaluate(model, val_data)
 
         print('-' * 89)
         print('| end of epoch {:3d} | time: {:5.2f}s '
