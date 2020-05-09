@@ -241,6 +241,8 @@ def load_model(model_name, device):
 
     print(model_name, 'loaded with device', str(model.device))
 
+    return model
+
 
 def test_model(model_name, device):
 
