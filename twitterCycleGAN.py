@@ -172,6 +172,14 @@ class Discriminator(nn.Module):
         outputs = self.decoder(src_embedding)
         return outputs
 
+def tokens_to_sentences(src, src_lens, vocab_itos):
+    sentences_tokens = src.transpose(0, 1).tolist()
+    sentences = []
+    for idx, sentence_tokens in enumerate(sentences_tokens):
+        sentence = list(map(lambda x: vocab_itos[x], sentence_tokens[:src_lens[idx]]))
+        sentences.append(sentence)
+    return sentences
+
 def train_model(model_name, user1, user2, device):
 
     ################### prepare the data ###################
@@ -277,15 +285,10 @@ def train_model(model_name, user1, user2, device):
     example_len = user1_train_lens[0,:1]
     output_example, output_len = model(example, user1_train_lens[0,:1])
 
-    print(example)
-    print(list(map(lambda x: user1_vocab_itos[x.item()], example[:example_len.item()])))
+    print(tokens_to_sentences(example, example_len, user1_vocab_itos))
 
-
-    print(output_example)
     print(output_example.size())
-    print(output_len)
-    output_sentence = list(map(lambda x: user2_vocab_itos[x.item()], output_example[:output_len.item()]))
-    print(len(output_sentence))
+    output_sentence = tokens_to_sentences(output_example, output_len, user2_vocab_itos)
     print(output_sentence)
 
     discriminator = Discriminator(user2_vocab_size, device=device).to(device)
