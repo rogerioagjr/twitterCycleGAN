@@ -1,6 +1,7 @@
 import math
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 ###################### USED IN DATA PREPARATION ######################
 import torchtext
@@ -37,11 +38,11 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x_pos)
 
 
-class Transformer(nn.Module):
+class Generator(nn.Module):
 
     def __init__(self, input_vocab_size, output_vocab_size, embedded_size, n_heads, n_hidden, n_layers,
                  dropout=0.5, device=torch.device('cuda'), max_len=50, pad=0, sos=1, eos=2):
-        super(Transformer, self).__init__()
+        super(Generator, self).__init__()
 
         self.device = device
         self.model_type = 'Transformer'
@@ -78,14 +79,14 @@ class Transformer(nn.Module):
         self.trg_decoder.weight.data.uniform_(-init_range, init_range)
 
 
-    def _generate_padding_mask_(self, batch_size, max_len, trg_lens):
+    def _generate_padding_mask_(self, batch_size, max_len, lens):
         mask = torch.ones(batch_size, max_len, dtype=torch.bool)
-        for idx, trg_len in enumerate(trg_lens):
-            mask[idx][:trg_len] = False
+        for idx, length in enumerate(lens):
+            mask[idx][:length] = False
         return mask
 
 
-    def forward(self, src, trg, src_lens, trg_lens):
+    def forward_one_word(self, src, trg, src_lens, trg_lens):
         src_embeddings = self.src_encoder(src) * math.sqrt(self.embedded_size)
         src_positional_embeddings = self.positional_encoder(src_embeddings)
 
@@ -105,7 +106,7 @@ class Transformer(nn.Module):
 
         return output
 
-    def translate_tweet(self, src, src_lens):
+    def forward(self, src, src_lens):
         max_len, batch_size = list(src.size())
 
         trg = torch.zeros(max_len, batch_size, dtype=torch.long).to(self.device)
@@ -115,7 +116,7 @@ class Transformer(nn.Module):
         is_finished = torch.zeros(batch_size, dtype=torch.bool).to(self.device)
 
         for idx in range(1, max_len-1):
-            output = self.forward(src, trg, src_lens, trg_lens)
+            output = self.forward_one_word(src, trg, src_lens, trg_lens)
             pred = output[idx, :, :].max(1).indices
             finished_now = (pred == self.eos)
             trg_lens[finished_now] = idx+1
@@ -126,6 +127,50 @@ class Transformer(nn.Module):
         trg_lens[~is_finished] = max_len
 
         return trg, trg_lens
+
+
+class Discriminator(nn.Module):
+
+    def __init__(self, vocab_size, embedded_size=200, n_heads=2, n_hidden=200, n_layers=2,
+                 dropout=0.2, max_len=50, device=torch.device('cuda'), pad=0):
+        super(Discriminator, self).__init__()
+        self.device = device
+        self.embedded_size = embedded_size
+        self.vocab_size = vocab_size
+
+        self.src_encoder = nn.Embedding(vocab_size, embedded_size, padding_idx=pad)
+        self.positional_encoder = PositionalEncoding(embedded_size, dropout)
+
+        encoder_layers = nn.TransformerEncoderLayer(embedded_size, n_heads, n_hidden, dropout)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layers, n_layers)
+
+        self.decoder = nn.Linear(embedded_size*max_len, 2)
+
+        self.init_weights()
+
+    def init_weights(self):
+        init_range = 0.1
+        self.src_encoder.weight.data.uniform_(-init_range, init_range)
+        self.decoder.bias.data.zero_()
+        self.decoder.weight.data.uniform_(-init_range, init_range)
+
+    def _generate_padding_mask_(self, batch_size, max_len, lens):
+        mask = torch.ones(batch_size, max_len, dtype=torch.bool)
+        for idx, length in enumerate(lens):
+            mask[idx][:length] = False
+        return mask
+
+    def forward(self, src, src_lens):
+        src_embeddings = self.src_encoder(src) * math.sqrt(self.embedded_size)
+        src_positional_embeddings = self.positional_encoder(src_embeddings)
+
+        max_len, batch_size = list(src.size())
+        src_padding_mask = self._generate_padding_mask_(batch_size, max_len, src_lens).to(self.device)
+        src_embedding = self.transformer_encoder(src_positional_embeddings,
+                                                 src_key_padding_mask=src_padding_mask
+                                                 ).transpose(0,1).view(batch_size, -1).contiguous()
+        outputs = self.decoder(src_embedding)
+        return outputs
 
 def train_model(model_name, user1, user2, device):
 
@@ -225,12 +270,12 @@ def train_model(model_name, user1, user2, device):
     n_layers = 2
     dropout = 0.2
 
-    model = Transformer(user1_vocab_size, user2_vocab_size, embedded_size, n_heads,
+    model = Generator(user1_vocab_size, user2_vocab_size, embedded_size, n_heads,
                         n_hidden, n_layers, dropout, device=device).to(device)
 
     example = user1_train_data[0,:,:1]
     example_len = user1_train_lens[0,:1]
-    output_example, output_len = model.translate_tweet(example, user1_train_lens[0,:1])
+    output_example, output_len = model(example, user1_train_lens[0,:1])
 
     print(example)
     print(list(map(lambda x: user1_vocab_itos[x.item()], example[:example_len.item()])))
@@ -243,8 +288,17 @@ def train_model(model_name, user1, user2, device):
     print(len(output_sentence))
     print(output_sentence)
 
+    discriminator = Discriminator(user2_vocab_size, device=device).to(device)
 
-    return None
+    example_bernie = user2_train_data[0,:,:1]
+
+    print('True Bernie')
+    print(F.softmax(discriminator(example_bernie, user2_train_lens[0,:1]), dim=1))
+
+    print('Translated to Bernie')
+    print(F.softmax(discriminator(output_example, output_len), dim=1))
+
+    return None, None
     criterion = nn.CrossEntropyLoss()
     lr = 5.0
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
@@ -350,7 +404,7 @@ def load_model(model_name, device):
     with open(kwargs_path, 'r') as kwargs_file:
         model_kwargs = json.load(kwargs_file)
 
-    model = Transformer(**model_kwargs).to(device)
+    model = Generator(**model_kwargs).to(device)
 
     params_path = 'models/' + model_name + '_params.pt'
 
@@ -436,6 +490,13 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(device)
     print('device is:', device)
+
+    # Set random seed for reproducibility
+    manualSeed = 999
+    # manualSeed = random.randint(1, 10000) # use if you want new results
+    print("Random Seed: ", manualSeed)
+    #random.seed(manualSeed)
+    torch.manual_seed(manualSeed)
 
     mode = sys.argv[1]
 
