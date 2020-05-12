@@ -168,7 +168,7 @@ class Discriminator(nn.Module):
         src_padding_mask = self._generate_padding_mask_(batch_size, max_len, src_lens).to(self.device)
         src_embedding = self.transformer_encoder(src_positional_embeddings,
                                                  src_key_padding_mask=src_padding_mask
-                                                 ).transpose(0,1).view(batch_size, -1).contiguous()
+                                                 ).transpose(0,1).reshape(batch_size, -1).contiguous()
         outputs = self.decoder(src_embedding)
         return outputs
 
@@ -278,114 +278,29 @@ def train_model(model_name, user1, user2, device):
     n_layers = 2
     dropout = 0.2
 
-    model = Generator(user1_vocab_size, user2_vocab_size, embedded_size, n_heads,
+    generator = Generator(user1_vocab_size, user2_vocab_size, embedded_size, n_heads,
                         n_hidden, n_layers, dropout, device=device).to(device)
-
-    example = user1_train_data[0,:,:1]
-    example_len = user1_train_lens[0,:1]
-    output_example, output_len = model(example, user1_train_lens[0,:1])
-
-    print(tokens_to_sentences(example, example_len, user1_vocab_itos))
-
-    print(output_example.size())
-    output_sentence = tokens_to_sentences(output_example, output_len, user2_vocab_itos)
-    print(output_sentence)
 
     discriminator = Discriminator(user2_vocab_size, device=device).to(device)
 
-    example_bernie = user2_train_data[0,:,:1]
-
-    print('True Bernie')
-    print(F.softmax(discriminator(example_bernie, user2_train_lens[0,:1]), dim=1))
-
-    print('Translated to Bernie')
-    print(F.softmax(discriminator(output_example, output_len), dim=1))
-
-    return None, None
-    criterion = nn.CrossEntropyLoss()
-    lr = 5.0
-    optimizer = torch.optim.SGD(model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1.0, gamma=0.95)
-
-    def train_epoch(train_model, data_source):
-        train_model.train()
-        total_loss = 0
-        start_time = time.time()
-
-        for batch, i in enumerate(range(0, data_source.size(0) -1, bptt)):
-            data, targets = get_batch(data_source, i)
-            optimizer.zero_grad()
-            output = model(data)
-            loss = criterion(output.view(-1, n_words), targets)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(train_model.parameters(), 0.5)
-            optimizer.step()
-
-            total_loss += loss.item()
-            log_interval = 200
-            if batch % log_interval == 0 and batch > 0:
-                cur_loss = total_loss / log_interval
-                time_elapsed = time.time() - start_time
-                print('| epoch {:3d} | {:5d}/{:5d} batches '
-                      '| lr {:02.2f} | ms/batch {:5.2f} '
-                      '| loss {:5.2f} | ppl {:8.2f}'.format(epoch, batch, len(data_source) // bptt, scheduler.get_lr()[0],
-                                                           time_elapsed * 1000 / log_interval, cur_loss,
-                                                           math.exp(cur_loss)))
-                total_loss = 0
-                start_time = time.time()
-
-    def evaluate(eval_model, data_source):
-        eval_model.eval()
-        total_loss = 0
-        with torch.no_grad():
-            for i in range(0, data_source.size(0) - 1, bptt):
-                data, targets = get_batch(data_source, i)
-                output = eval_model(data)
-                output_flat = output.view(-1, n_words)
-                total_loss += len(data) * criterion(output_flat, targets).item()
-        return total_loss / (len(data_source) - 1)
-
-    best_val_loss = float('inf')
-    epochs = 3
-    best_model = None
-
-    ################### training loop ###################
-
-    for epoch in range(1, epochs + 1):
-        epoch_start_time = time.time()
-        train_epoch(model, train_data)
-        val_loss = evaluate(model, val_data)
-
-        print('-' * 89)
-        print('| end of epoch {:3d} | time: {:5.2f}s '
-              '| valid loss {:5.2f} | valid ppl {:8.2f}'.format(epoch, (time.time() - epoch_start_time), val_loss,
-                                                                math.exp(val_loss)))
-        print('-' * 89)
-
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            best_model = model
-
-        scheduler.step()
-
-    ################### evaluation ###################
-
-    test_loss = evaluate(best_model, test_data)
-    print('=' * 89)
-    print('| End of training | test loss {:5.2f} | test ppl {:8.2f}'.format(test_loss, math.exp(test_loss)))
-    print('=' * 89)
-
     ################ saving the model ################
 
-    model_params = model.state_dict()
+    generator_params = generator.state_dict()
 
-    model_kwargs = {'input_vocab_size': user1_vocab_size, 'output_vocab_size': user2_vocab_size,
+    generator_kwargs = {'input_vocab_size': user1_vocab_size, 'output_vocab_size': user2_vocab_size,
                     'embedded_size': embedded_size, 'n_heads': n_heads, 'n_hidden': n_hidden, 'n_layers': n_layers,
                     'dropout': dropout, 'device': device}
 
-    save_model(model_name, model_params, model_kwargs)
+    save_model(model_name + '_generator', generator_params, generator_kwargs)
 
-    return best_model, None
+    discriminator_params = discriminator.state_dict()
+
+    discriminator_kwargs = {'vocab_size':user2_vocab_size, 'device': device}
+
+    save_model(model_name + '_discriminator', discriminator_params, discriminator_kwargs)
+
+
+    return discriminator, generator
 
 def save_model(model_name, model_params, model_kwargs):
 
@@ -403,27 +318,39 @@ def save_model(model_name, model_params, model_kwargs):
 
 def load_model(model_name, device):
 
-    kwargs_path = 'models/' + model_name + '_kwargs.json'
-    with open(kwargs_path, 'r') as kwargs_file:
-        model_kwargs = json.load(kwargs_file)
+    generator_kwargs_path = 'models/' + model_name + '_generator_kwargs.json'
+    with open(generator_kwargs_path, 'r') as generator_kwargs_file:
+        generator_kwargs = json.load(generator_kwargs_file)
 
-    model = Generator(**model_kwargs).to(device)
+    generator = Generator(**generator_kwargs).to(device)
 
-    params_path = 'models/' + model_name + '_params.pt'
+    generator_params_path = 'models/' + model_name + '_generator_params.pt'
 
-    model.load_state_dict(torch.load(params_path))
-    model.eval()
+    generator.load_state_dict(torch.load(generator_params_path))
+    generator.eval()
 
-    print(model_name, 'loaded with device', str(model.device))
+    discriminator_kwargs_path = 'models/' + model_name + '_discriminator_kwargs.json'
+    with open(discriminator_kwargs_path, 'r') as discriminator_kwargs_file:
+        discriminator_kwargs = json.load(discriminator_kwargs_file)
 
-    return model
+    discriminator = Discriminator(**discriminator_kwargs).to(device)
+
+    discriminator_params_path = 'models/' + model_name + '_discriminator_params.pt'
+
+    discriminator.load_state_dict(torch.load(discriminator_params_path))
+    discriminator.eval()
+
+    print(model_name, 'loaded with device', str(generator.device))
+
+    return generator, discriminator
 
 
 def test_model(model_name, device):
 
-    model = load_model(model_name, device)
+    generator, discriminator = load_model(model_name, device)
 
-    print(model.state_dict())
+    print(generator.state_dict())
+    print(discriminator.state_dict())
 
 
 def prepare_text(s):
@@ -505,7 +432,7 @@ if __name__ == "__main__":
 
     if mode == 'train':
         model_name, user1, user2 = sys.argv[2], sys.argv[3], sys.argv[4]
-        model1, model2 = train_model(model_name=model_name, user1=user1, user2=user2, device=device)
+        discriminator, generator = train_model(model_name=model_name, user1=user1, user2=user2, device=device)
 
     if mode == 'test':
         model_name = sys.argv[2]
