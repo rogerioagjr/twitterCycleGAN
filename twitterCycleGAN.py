@@ -90,7 +90,7 @@ class PositionalEncoding(nn.Module):
 class Generator(nn.Module):
 
     def __init__(self, input_vocab_size, output_vocab_size, embedded_size, n_heads, n_hidden, n_layers,
-                 src_encoder, dropout=0.5, device=torch.device('cuda'), max_len=50, pad=0, sos=1, eos=2):
+                 src_encoder, dropout=0.5, device='cuda', max_len=50, pad=0, sos=1, eos=2):
         super(Generator, self).__init__()
 
         self.device = device
@@ -101,7 +101,7 @@ class Generator(nn.Module):
 
         self.embedded_size = embedded_size
         self.input_vocab_size = input_vocab_size
-        self.src_encoder = src_encoder
+        self.src_encoder = src_encoder.to(device)
 
         self.positional_encoder = PositionalEncoding(embedded_size, dropout)
 
