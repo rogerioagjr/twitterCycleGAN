@@ -1,8 +1,10 @@
 import math
 import torch
 import torch.nn as nn
+from torch.autograd import Variable
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
+import itertools
 
 ###################### USED IN DATA PREPARATION ######################
 import torchtext
@@ -13,11 +15,57 @@ import re
 import time
 import pandas as pd
 import numpy as np
+import random
 
 import json
 import os
 import csv
 import sys
+
+class LambdaLR():
+    def __init__(self, n_epochs, decay_start_epoch):
+        assert ((n_epochs - decay_start_epoch) > 0), "Decay must start before the training session ends!"
+        self.n_epochs = n_epochs
+        self.offset = 0
+        self.decay_start_epoch = decay_start_epoch
+
+    def step(self, epoch):
+        return 1.0 - max(0, epoch + self.offset - self.decay_start_epoch)/(self.n_epochs - self.decay_start_epoch)
+
+class ReplayBuffer():
+    def __init__(self, max_size=50):
+        assert (max_size > 0), "Empty buffer or trying to create a black hole. Be careful."
+        self.max_size = max_size
+        self.data_src = []
+        self.data_lens = []
+
+    def push_and_pop(self, src, lens):
+        to_return_src = []
+        to_return_lens = []
+        src = src.transpose(0, 1)
+        for src_element, lens_element in zip(src, lens):
+            src_element = torch.unsqueeze(src_element, 0)
+            lens_element = torch.unsqueeze(lens_element, 0)
+            if len(self.data_src) < self.max_size:
+                self.data_src.append(src_element)
+                self.data_lens.append(lens_element)
+
+                to_return_src.append(src_element)
+                to_return_lens.append(lens_element)
+            else:
+                if random.uniform(0,1) > 0.5:
+                    i = random.randint(0, self.max_size-1)
+                    to_return_src.append(self.data_src[i].clone())
+                    to_return_lens.append(self.data_lens[i].clone())
+
+                    self.data_src[i] = src_element
+                    self.data_lens[i] = lens_element
+                else:
+                    to_return_src.append(src_element)
+                    to_return_lens.append(lens_element)
+        return Variable(torch.cat(to_return_src).transpose(0, 1)), Variable(torch.cat(to_return_lens))
+
+
 
 class PositionalEncoding(nn.Module):
     def __init__(self, embedded_size, dropout=0.1, max_len=5000):
@@ -42,7 +90,7 @@ class PositionalEncoding(nn.Module):
 class Generator(nn.Module):
 
     def __init__(self, input_vocab_size, output_vocab_size, embedded_size, n_heads, n_hidden, n_layers,
-                 dropout=0.5, device=torch.device('cuda'), max_len=50, pad=0, sos=1, eos=2):
+                 src_encoder, dropout=0.5, device=torch.device('cuda'), max_len=50, pad=0, sos=1, eos=2):
         super(Generator, self).__init__()
 
         self.device = device
@@ -53,7 +101,7 @@ class Generator(nn.Module):
 
         self.embedded_size = embedded_size
         self.input_vocab_size = input_vocab_size
-        self.src_encoder = nn.Embedding(input_vocab_size, embedded_size, padding_idx=pad)
+        self.src_encoder = src_encoder
 
         self.positional_encoder = PositionalEncoding(embedded_size, dropout)
 
@@ -181,17 +229,14 @@ def tokens_to_sentences(src, src_lens, vocab_itos):
         sentences.append(sentence)
     return sentences
 
-def train_model(model_name, user1, user2, n_epochs, device):
+def train_model(model_name, user_A, user_B, n_epochs, decay_epoch, device):
 
     ################### prepare the data ###################
 
-    def prepare_data(user, batch_size, max_len, device):
+    def prepare_data(user, batch_size, max_len, vocab_itos, vocab_stoi, device):
         train_df = pd.read_csv('data/' + user + '/train.csv')
         val_df = pd.read_csv('data/' + user + '/val.csv')
         test_df = pd.read_csv('data/' + user + '/test.csv')
-
-        vocab_itos = {0: '<pad>', 1: '<sos>', 2: '<eos>', 3: '<unk>'}
-        vocab_stoi = {'<pad>': 0, '<sos>': 1, '<eos>': 2, '<unk>': 3}
 
         train_tokens = torch.zeros(len(train_df), max_len, dtype=torch.long)
         val_tokens = torch.zeros(len(val_df), max_len, dtype=torch.long)
@@ -254,144 +299,279 @@ def train_model(model_name, user1, user2, n_epochs, device):
         val_data, val_lens = batchify(val_tokens, val_lens, batch_size)
         test_data, test_lens = batchify(test_tokens, test_lens, batch_size)
 
-        return train_data, val_data, test_data, train_lens, val_lens, test_lens, vocab_itos
+        return train_data, val_data, test_data, train_lens, val_lens, test_lens
     ################### training settings ###################
 
     batch_size = 20
     max_len = 50
 
-    (user1_train_data, user1_val_data, user1_test_data,
-     user1_train_lens, user1_val_lens, user1_test_lens, user1_vocab_itos) = prepare_data(user1, batch_size=batch_size,
-                                                                                       max_len=max_len, device=device)
+    vocab_itos = {0: '<pad>', 1: '<sos>', 2: '<eos>', 3: '<unk>'}
+    vocab_stoi = {'<pad>': 0, '<sos>': 1, '<eos>': 2, '<unk>': 3}
 
-    (user2_train_data, user2_val_data, user2_test_data,
-     user2_train_lens, user2_val_lens, user2_test_lens, user2_vocab_itos) = prepare_data(user2, batch_size=batch_size,
-                                                                                       max_len=max_len, device=device)
+    (A_train_data, A_val_data, A_test_data,
+     A_train_lens, A_val_lens, A_test_lens) = prepare_data(user_A, batch_size=batch_size, max_len=max_len,
+                                                           vocab_itos=vocab_itos, vocab_stoi=vocab_stoi, device=device)
 
-    user1_vocab_size = len(user1_vocab_itos)
-    user2_vocab_size = len(user2_vocab_itos)
+    (B_train_data, B_val_data, B_test_data,
+     B_train_lens, B_val_lens, B_test_lens) = prepare_data(user_B, batch_size=batch_size, max_len=max_len,
+                                                           vocab_itos=vocab_itos, vocab_stoi=vocab_stoi, device=device)
 
-    embedded_size = 256
-    n_heads = 8
-    n_hidden = 1024
-    n_layers = 6
-    dropout = 0.1
+    n_batches = A_train_data.size(0)
 
-    generator = Generator(user1_vocab_size, user2_vocab_size, embedded_size, n_heads,
-                        n_hidden, n_layers, dropout, device=device).to(device)
+    vocab_size = len(vocab_itos)
 
-    discriminator = Discriminator(user2_vocab_size, device=device).to(device)
+    print('vocab size:', vocab_size)
+
+    G_embedded_size = 256
+    G_n_heads = 8
+    G_n_hidden = 1024
+    G_n_layers = 6
+    G_dropout = 0.1
+
+    shared_encoder = nn.Embedding(vocab_size, G_embedded_size, padding_idx=0)
+
+    netG_A2B = Generator(input_vocab_size=vocab_size, output_vocab_size=vocab_size, embedded_size=G_embedded_size,
+                         n_heads=G_n_heads, n_hidden=G_n_hidden, n_layers=G_n_layers, dropout=G_dropout,
+                         src_encoder=shared_encoder, device=device).to(device)
+
+    netG_B2A = Generator(input_vocab_size=vocab_size, output_vocab_size=vocab_size, embedded_size=G_embedded_size,
+                         n_heads=G_n_heads, n_hidden=G_n_hidden, n_layers=G_n_layers, dropout=G_dropout,
+                         src_encoder=shared_encoder, device=device).to(device)
+
+    D_embedded_size = 32
+    D_n_heads = 1
+    D_n_hidden = 64
+    D_n_layers = 1
+    D_dropout = 0.1
+
+    netD_A = Discriminator(vocab_size=vocab_size, embedded_size=D_embedded_size, n_heads=D_n_heads,
+                                  n_hidden=D_n_hidden, n_layers=D_n_layers, dropout=D_dropout,
+                                  device=device).to(device)
+
+    netD_B = Discriminator(vocab_size=vocab_size, embedded_size=D_embedded_size, n_heads=D_n_heads,
+                           n_hidden=D_n_hidden, n_layers=D_n_layers, dropout=D_dropout,
+                           device=device).to(device)
 
     ################# training loop #################
 
-    lr = 0.0002
-    beta1 = 0.5
+    # losses
 
-    tweets_list = []
+    criterion_GAN = torch.nn.MSELoss()
+    criterion_cycle = torch.nn.L1Loss()
+    criterion_identity = torch.nn.L1Loss()
+
+    # Optimizers & LR schedulers
+
+    lr = 0.0002
+    betas = (0.5, 0.999)
+
+    optimizer_G = torch.optim.Adam(itertools.chain(netG_A2B.parameters(), netG_B2A.parameters()), lr=lr, betas=betas)
+    optimizer_D_A = torch.optim.Adam(netD_A.parameters(), lr=lr, betas=betas)
+    optimizer_D_B = torch.optim.Adam(netD_B.parameters(), lr=lr, betas=betas)
+
+    lr_scheduler_G = torch.optim.lr_scheduler.LambdaLR(optimizer_G, lr_lambda=LambdaLR(n_epochs, decay_epoch).step)
+    lr_scheduler_D_A = torch.optim.lr_scheduler.LambdaLR(optimizer_D_A, lr_lambda=LambdaLR(n_epochs, decay_epoch).step)
+    lr_scheduler_D_B = torch.optim.lr_scheduler.LambdaLR(optimizer_D_B, lr_lambda=LambdaLR(n_epochs, decay_epoch).step)
+
+    # Inputs & targets memory allocation
+
+    LongTensor = torch.cuda.LongTensor if device == 'cuda' else torch.LongTensor
+    FloatTensor = torch.cuda.FloatTensor if device == 'cuda' else torch.FloatTensor
+    A_src = LongTensor(max_len, batch_size)
+    A_lens = LongTensor(batch_size)
+    B_src = LongTensor(max_len, batch_size)
+    B_lens = LongTensor(batch_size)
+    target_real = Variable(FloatTensor(batch_size).fill_(1.0), requires_grad=False)
+    target_fake = Variable(FloatTensor(batch_size).fill_(0.0), requires_grad=False)
+
+    fake_A_buffer = ReplayBuffer()
+    fake_B_buffer = ReplayBuffer()
+
+    n_fixed = 5
+
+    fixed_A_src = A_train_data[0, :, :n_fixed]
+    fixed_A_lens = A_train_lens[0, :n_fixed]
+    A_tweets_list = []
+
+    fixed_B_src = B_train_data[0, :, :n_fixed]
+    fixed_B_lens = B_train_lens[0, :n_fixed]
+    B_tweets_list = []
+
     G_losses = []
     D_losses = []
 
-    iters = 0
-
-    real_label = 1
-    fake_label = 0
-
-    criterion = nn.BCELoss()
-
-    optimizerD = torch.optim.Adam(discriminator.parameters(), lr=lr/10, betas=(beta1, 0.999))
-    optimizerG = torch.optim.Adam(generator.parameters(), lr=lr, betas=(beta1, 0.999))
-
-    n_batches = user1_train_data.size(0)
-
-    n_fixed = 5
-    fixed_src = user1_train_data[0,:,:n_fixed]
-    fixed_lens = user1_train_lens[0,:n_fixed]
-
+    # Training
     print("Starting Training Loop...")
     for epoch in range(n_epochs):
         for batch_idx in range(n_batches):
-            ##############################################################
-            #                   Update Discriminator                     #
-            ##############################################################
-            ## Train on real Sanders tweets
+            real_A_src = Variable(A_src.copy_(A_train_data[batch_idx]))
+            real_A_lens = Variable(A_lens.copy_(A_train_lens[batch_idx]))
 
-            user1_src = user1_train_data[batch_idx]
-            user1_lens = user1_train_lens[batch_idx]
-
-            user2_src = user2_train_data[batch_idx]
-            user2_lens = user2_train_lens[batch_idx]
-
-            discriminator.zero_grad()
-
-            label = torch.full((batch_size,), real_label, dtype=torch.float, device=device)
-            output = discriminator(user2_src, user2_lens).view(-1)
-
-            err_discriminator_real = criterion(output, label)
-            err_discriminator_real.backward()
-            D_y = output.mean().item()
-
-            ## Train on fake Sanders tweets
-
-            fake_src, fake_lens = generator(user1_src, user1_lens)
-            label.fill_(fake_label)
-            output = discriminator(fake_src.detach(), fake_lens.detach()).view(-1)
-            err_discriminator_fake = criterion(output, label)
-            err_discriminator_fake.backward()
-            D_G_x1 = output.mean().item()
-            err_discriminator = err_discriminator_real + err_discriminator_fake
-            optimizerD.step()
+            real_B_src = Variable(B_src.copy_(B_train_data[batch_idx]))
+            real_B_lens = Variable(B_lens.copy_(B_train_lens[batch_idx]))
 
             ##############################################################
-            #                     Update Generator                       #
+            #                     Update Generators                      #
             ##############################################################
 
-            generator.zero_grad()
-            label.fill_(real_label)
-            output = discriminator(fake_src, fake_lens).view(-1)
-            err_generator = criterion(output, label)
-            err_generator.backward()
-            D_G_x2 = output.mean().item()
-            optimizerG.step()
+            optimizer_G.zero_grad()
+
+            # Identity loss: G_A2B(B) = B and vice versa
+            same_B_src, same_B_lens = netG_A2B(real_B_src, real_B_lens)
+            embedded_same_B = shared_encoder(same_B_src)
+            embedded_real_B = shared_encoder(real_B_src)
+            loss_identity_B = criterion_identity(embedded_same_B, embedded_real_B) * 5.0
+
+            same_A_src, same_A_lens = netG_B2A(real_A_src, real_A_lens)
+            embedded_same_A = shared_encoder(same_A_src)
+            embedded_real_A = shared_encoder(real_A_src)
+            loss_identity_A = criterion_identity(embedded_same_A, embedded_real_A) * 5.0
+
+            # GAN loss
+            fake_B_src, fake_B_lens = netG_A2B(real_A_src, real_A_lens)
+            pred_fake = netD_B(fake_B_src, fake_B_lens).view(-1)
+            loss_GAN_A2B = criterion_GAN(pred_fake, target_real)
+
+            fake_A_src, fake_A_lens = netG_B2A(real_B_src, real_B_lens)
+            pred_fake = netD_A(fake_A_src, fake_A_lens).view(-1)
+            loss_GAN_B2A = criterion_GAN(pred_fake, target_real)
+
+            # Cycle loss
+            recovered_A_scr, recovered_A_lens = netG_B2A(fake_B_src, fake_B_lens)
+            embedded_recovered_A = shared_encoder(recovered_A_scr)
+            loss_cycle_ABA = criterion_cycle(embedded_recovered_A, embedded_real_A) * 10.0
+
+            recovered_B_scr, recovered_B_lens = netG_A2B(fake_A_src, fake_A_lens)
+            embedded_recovered_B = shared_encoder(recovered_B_scr)
+            loss_cycle_BAB = criterion_cycle(embedded_recovered_B, embedded_real_B)*10.0
+
+            # Total loss
+            loss_G = loss_identity_A + loss_identity_B + loss_GAN_A2B + loss_GAN_B2A + loss_cycle_ABA + loss_cycle_BAB
+            loss_G.backward()
+
+            optimizer_G.step()
+
+            ##############################################################
+            #                   Update Discriminator A                   #
+            ##############################################################
+
+            optimizer_D_A.zero_grad()
+
+            # Real loss
+            pred_real = netD_A(real_A_src, real_A_lens).view(-1)
+            D_A_x = pred_real.mean().item()
+
+            loss_D_real = criterion_GAN(pred_real, target_real)
+
+            # Fake loss
+            fake_A_src, fake_A_lens = fake_A_buffer.push_and_pop(fake_A_src, fake_A_lens)
+            pred_fake = netD_A(fake_A_src.detach(), fake_A_lens.detach()).view(-1)
+            D_A_G_x = pred_fake.mean().item()
+
+            loss_D_fake = criterion_GAN(pred_fake, target_fake)
+
+            # Total loss
+            loss_D_A = (loss_D_real + loss_D_fake) * 0.5
+            loss_D_A.backward()
+
+            optimizer_D_A.step()
+
+            ##############################################################
+            #                   Update Discriminator B                   #
+            ##############################################################
+
+            optimizer_D_B.zero_grad()
+
+            # Real loss
+            pred_real = netD_B(real_B_src, real_B_lens).view(-1)
+            D_B_x = pred_real.mean().item()
+
+            loss_D_real = criterion_GAN(pred_real, target_real)
+
+            # Fake loss
+            fake_B_src, fake_B_lens = fake_B_buffer.push_and_pop(fake_B_src, fake_B_lens)
+            pred_fake = netD_B(fake_B_src.detach(), fake_B_lens.detach()).view(-1)
+            D_B_G_x = pred_fake.mean().item()
+
+            loss_D_fake = criterion_GAN(pred_fake, target_fake)
+
+            # Total loss
+            loss_D_B = (loss_D_real + loss_D_fake) * 0.5
+            loss_D_B.backward()
+
+            optimizer_D_B.step()
 
             ##############################################################
             #                   Output Training Stats                    #
             ##############################################################
 
-            if batch_idx % 20 == 0 or batch_idx == n_batches-1:
-                print('[%d/%d][%d/%d]\tLoss_D: %.4f\tLoss_G: %.4f\tD(y): '
-                      '%.4f\tD(G(x)): %.4f / %.4f' % (epoch, n_epochs, batch_idx, n_batches, err_discriminator.item(),
-                                                      err_generator.item(), D_y, D_G_x1, D_G_x2))
+            D_x = (D_A_x + D_B_x) / 2
+            D_G_x = (D_A_G_x + D_B_G_x) / 2
 
-            # Save losses for plotting
-            G_losses.append(err_generator.item())
-            D_losses.append(err_discriminator.item())
+            loss_D = loss_D_A + loss_D_B
 
-            iters += 1
+            if batch_idx % 20 == 0 or batch_idx == n_batches - 1:
+                print('[%d/%d][%d/%d]\tLoss_D: %.4f\tLoss_G: %.4f\tD(x): '
+                      '%.4f\tD(G(x)): %.4f' % (epoch, n_epochs, batch_idx, n_batches, loss_D.item(),
+                                                      loss_G.item(), D_x, D_G_x))
+
+            D_losses.append(loss_D.item())
+            G_losses.append(loss_G.item())
+
+        # Update learning rates
+        lr_scheduler_G.step()
+        lr_scheduler_D_A.step()
+        lr_scheduler_D_B.step()
 
         with torch.no_grad():
-            fake_src, fake_lens = generator(fixed_src, fixed_lens)
-        tweets_list.append(tokens_to_sentences(fake_src, fake_lens, user2_vocab_itos))
+            fake_B_src, fake_B_lens = netG_A2B(fixed_A_src, fixed_A_lens)
+            fake_A_src, fake_A_lens = netG_B2A(fixed_B_src, fixed_B_lens)
+        B_tweets_list.append(tokens_to_sentences(fake_B_src, fake_B_lens, vocab_itos))
+        A_tweets_list.append(tokens_to_sentences(fake_A_src, fake_A_lens, vocab_itos))
 
     ########### show translation evolution ###########
 
-    print('=' * 100)
-    print('Source tweets examples')
-    print('=' * 100)
+    with open("models/" + model_name + '_evolution.txt', 'w') as f:
 
-    fixed_sentences = tokens_to_sentences(fixed_src, fixed_lens, user1_vocab_itos)
-    for sentence in fixed_sentences:
-        print(" ".join(sentence))
-    print('='*100)
+        f.write('=' * 100 + '\n')
+        f.write('Source tweets examples from ' + user_A +'\n')
+        f.write('=' * 100 + '\n')
 
-    print('=' * 100)
-    print('Translated tweets examples')
-    print('=' * 100)
+        fixed_sentences = tokens_to_sentences(fixed_A_src, fixed_A_lens, vocab_itos)
+        for sentence in fixed_sentences:
+            f.write(" ".join(sentence) + '\n')
+        f.write('='*100 + '\n')
 
-    for epoch, sentences in enumerate(tweets_list):
-        print('epoch:', epoch)
-        for sentence in sentences:
-            print(" ".join(sentence))
-        print('='*100)
+        f.write('=' * 100 + '\n')
+        f.write('Translated tweets examples from ' + user_A + ' to ' + user_B + '\n')
+        f.write('=' * 100 + '\n')
+
+        for epoch, sentences in enumerate(B_tweets_list):
+            f.write('epoch:' + str(epoch) + '\n')
+            for sentence in sentences:
+                f.write(" ".join(sentence) + '\n')
+            f.write('='*100 + '\n')
+
+        f.write('\n')
+
+        f.write('=' * 100 + '\n')
+        f.write('Source tweets examples from ' + user_B + '\n')
+        f.write('=' * 100 + '\n')
+
+        fixed_sentences = tokens_to_sentences(fixed_B_src, fixed_B_lens, vocab_itos)
+        for sentence in fixed_sentences:
+            f.write(" ".join(sentence) + '\n')
+        f.write('=' * 100 + '\n')
+
+        f.write('=' * 100 + '\n')
+        f.write('Translated tweets examples from ' + user_B + ' to ' + user_A + '\n')
+        f.write('=' * 100 + '\n')
+
+        for epoch, sentences in enumerate(A_tweets_list):
+            f.write('epoch:' + str(epoch) + '\n')
+            for sentence in sentences:
+                f.write(" ".join(sentence) + '\n')
+            f.write('=' * 100 + '\n')
 
     ################## plot results ##################
 
@@ -406,22 +586,37 @@ def train_model(model_name, user1, user2, n_epochs, device):
 
     ################ saving the model ################
 
-    generator_params = generator.state_dict()
+    netG_A2B_params = netG_A2B.state_dict()
 
-    generator_kwargs = {'input_vocab_size': user1_vocab_size, 'output_vocab_size': user2_vocab_size,
-                    'embedded_size': embedded_size, 'n_heads': n_heads, 'n_hidden': n_hidden, 'n_layers': n_layers,
-                    'dropout': dropout}
+    netG_A2B_kwargs = {'input_vocab_size': vocab_size, 'output_vocab_size': vocab_size,
+                       'embedded_size': G_embedded_size, 'n_heads': G_n_heads, 'n_hidden': G_n_hidden,
+                       'n_layers': G_n_layers, 'dropout': G_dropout}
 
-    save_model(model_name + '_generator', generator_params, generator_kwargs)
+    save_model(model_name + '_netG_A2B', netG_A2B_params, netG_A2B_kwargs)
 
-    discriminator_params = discriminator.state_dict()
+    netG_B2A_params = netG_B2A.state_dict()
 
-    discriminator_kwargs = {'vocab_size':user2_vocab_size}
+    netG_B2A_kwargs = {'input_vocab_size': vocab_size, 'output_vocab_size': vocab_size,
+                       'embedded_size': G_embedded_size, 'n_heads': G_n_heads, 'n_hidden': G_n_hidden,
+                       'n_layers': G_n_layers, 'dropout': G_dropout}
 
-    save_model(model_name + '_discriminator', discriminator_params, discriminator_kwargs)
+    save_model(model_name + '_netG_B2A', netG_B2A_params, netG_B2A_kwargs)
 
+    netD_A_params = netD_A.state_dict()
 
-    return discriminator, generator
+    netD_A_kwargs = {'vocab_size':vocab_size, 'embedded_size': D_embedded_size, 'n_heads': D_n_heads,
+                     'n_hidden': D_n_hidden, 'n_layers': D_n_layers, 'dropout': D_dropout}
+
+    save_model(model_name + '_netD_A', netD_A_params, netD_A_kwargs)
+
+    netD_B_params = netD_B.state_dict()
+
+    netD_B_kwargs = {'vocab_size': vocab_size, 'embedded_size': D_embedded_size, 'n_heads': D_n_heads,
+                     'n_hidden': D_n_hidden, 'n_layers': D_n_layers, 'dropout': D_dropout}
+
+    save_model(model_name + '_netD_B', netD_B_params, netD_B_kwargs)
+
+    return netG_A2B, netG_B2A, netD_A, netD_B
 
 def save_model(model_name, model_params, model_kwargs):
 
@@ -439,40 +634,63 @@ def save_model(model_name, model_params, model_kwargs):
 
 def load_model(model_name, device):
 
-    generator_kwargs_path = 'models/' + model_name + '_generator_kwargs.json'
-    with open(generator_kwargs_path, 'r') as generator_kwargs_file:
-        generator_kwargs = json.load(generator_kwargs_file)
+    netG_A2B_kwargs_path = 'models/' + model_name + '_netG_A2B_kwargs.json'
+    with open(netG_A2B_kwargs_path, 'r') as netG_A2B_kwargs_file:
+        netG_A2B_kwargs = json.load(netG_A2B_kwargs_file)
 
-    generator = Generator(**generator_kwargs).to(device)
+    netG_A2B = Generator(**netG_A2B_kwargs).to(device)
 
-    generator_params_path = 'models/' + model_name + '_generator_params.pt'
+    netG_A2B_params_path = 'models/' + model_name + '_netG_A2B_params.pt'
 
-    generator.load_state_dict(torch.load(generator_params_path))
-    generator.eval()
+    netG_A2B.load_state_dict(torch.load(netG_A2B_params_path))
+    netG_A2B.eval()
 
-    discriminator_kwargs_path = 'models/' + model_name + '_discriminator_kwargs.json'
-    with open(discriminator_kwargs_path, 'r') as discriminator_kwargs_file:
-        discriminator_kwargs = json.load(discriminator_kwargs_file)
+    netG_B2A_kwargs_path = 'models/' + model_name + '_netG_B2A_kwargs.json'
+    with open(netG_B2A_kwargs_path, 'r') as netG_B2A_kwargs_file:
+        netG_B2A_kwargs = json.load(netG_B2A_kwargs_file)
 
-    discriminator = Discriminator(**discriminator_kwargs).to(device)
+    netG_B2A = Generator(**netG_B2A_kwargs).to(device)
 
-    discriminator_params_path = 'models/' + model_name + '_discriminator_params.pt'
+    netG_B2A_params_path = 'models/' + model_name + '_netG_B2A_params.pt'
 
-    discriminator.load_state_dict(torch.load(discriminator_params_path))
-    discriminator.eval()
+    netG_B2A.load_state_dict(torch.load(netG_B2A_params_path))
+    netG_B2A.eval()
+
+    netD_A_kwargs_path = 'models/' + model_name + '_netD_A_kwargs.json'
+    with open(netD_A_kwargs_path, 'r') as netD_A_kwargs_file:
+        netD_A_kwargs = json.load(netD_A_kwargs_file)
+
+    netD_A = Discriminator(**netD_A_kwargs).to(device)
+
+    netD_A_params_path = 'models/' + model_name + '_netD_A_params.pt'
+
+    netD_A.load_state_dict(torch.load(netD_A_params_path))
+    netD_A.eval()
+
+    netD_B_kwargs_path = 'models/' + model_name + '_netD_B_kwargs.json'
+    with open(netD_B_kwargs_path, 'r') as netD_B_kwargs_file:
+        netD_B_kwargs = json.load(netD_B_kwargs_file)
+
+    netD_B = Discriminator(**netD_B_kwargs).to(device)
+
+    netD_B_params_path = 'models/' + model_name + '_netD_B_params.pt'
+
+    netD_B.load_state_dict(torch.load(netD_B_params_path))
+    netD_B.eval()
 
     print(model_name, 'loaded with device', str(generator.device))
 
-    return generator, discriminator
+    return netG_A2B, netG_B2A, netD_A, netD_B
 
 
 def test_model(model_name, device):
 
-    generator, discriminator = load_model(model_name, device)
+    netG_A2B, netG_B2A, netD_A, netD_B = load_model(model_name, device)
 
-    print(generator.state_dict())
-    print(discriminator.state_dict())
-
+    print(netG_A2B.state_dict())
+    print(netG_B2A.state_dict())
+    print(netD_A.state_dict())
+    print(netD_B.state_dict())
 
 def prepare_text(s):
     words = s.split(' ')
@@ -548,13 +766,15 @@ if __name__ == "__main__":
     print("Random Seed: ", manualSeed)
     #random.seed(manualSeed)
     torch.manual_seed(manualSeed)
+    random.seed(manualSeed)
 
     mode = sys.argv[1]
 
     if mode == 'train':
-        model_name, user1, user2, n_epochs = sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5])
-        discriminator, generator = train_model(model_name=model_name, user1=user1, user2=user2,
-                                               n_epochs=n_epochs, device=device)
+        model_name, user_A, user_B, n_epochs, decay_epoch = (sys.argv[2], sys.argv[3], sys.argv[4],
+                                                             int(sys.argv[5]), int(sys.argv[6]))
+        netG_A2B, netG_B2A, netD_A, netD_B = train_model(model_name=model_name, user_A=user_A, user_B=user_B,
+                                                         n_epochs=n_epochs, decay_epoch=decay_epoch, device=device)
 
     if mode == 'test':
         model_name = sys.argv[2]
@@ -564,5 +784,3 @@ if __name__ == "__main__":
         user = sys.argv[2]
         n_tweets = int(sys.argv[3])
         prepare_user_data(user, n_tweets)
-
-
