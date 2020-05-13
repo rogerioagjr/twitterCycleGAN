@@ -2,6 +2,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
 
 ###################### USED IN DATA PREPARATION ######################
 import torchtext
@@ -144,7 +145,7 @@ class Discriminator(nn.Module):
         encoder_layers = nn.TransformerEncoderLayer(embedded_size, n_heads, n_hidden, dropout)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layers, n_layers)
 
-        self.decoder = nn.Linear(embedded_size*max_len, 2)
+        self.decoder = nn.Linear(embedded_size*max_len, 1)
 
         self.init_weights()
 
@@ -170,7 +171,7 @@ class Discriminator(nn.Module):
                                                  src_key_padding_mask=src_padding_mask
                                                  ).transpose(0,1).reshape(batch_size, -1).contiguous()
         outputs = self.decoder(src_embedding)
-        return outputs
+        return torch.sigmoid(outputs)
 
 def tokens_to_sentences(src, src_lens, vocab_itos):
     sentences_tokens = src.transpose(0, 1).tolist()
@@ -267,8 +268,6 @@ def train_model(model_name, user1, user2, device):
      user2_train_lens, user2_val_lens, user2_test_lens, user2_vocab_itos) = prepare_data(user2, batch_size=batch_size,
                                                                                        max_len=max_len, device=device)
 
-    print(user1_train_data.size())
-
     user1_vocab_size = len(user1_vocab_itos)
     user2_vocab_size = len(user2_vocab_itos)
 
@@ -282,6 +281,129 @@ def train_model(model_name, user1, user2, device):
                         n_hidden, n_layers, dropout, device=device).to(device)
 
     discriminator = Discriminator(user2_vocab_size, device=device).to(device)
+
+    ################# training loop #################
+
+    n_epochs = 3
+    lr = 0.0002
+    beta1 = 0.5
+
+    tweets_list = []
+    G_losses = []
+    D_losses = []
+
+    iters = 0
+
+    real_label = 1
+    fake_label = 0
+
+    criterion = nn.BCELoss()
+
+    optimizerD = torch.optim.Adam(discriminator.parameters(), lr=lr, betas=(beta1, 0.999))
+    optimizerG = torch.optim.Adam(generator.parameters(), lr=lr, betas=(beta1, 0.999))
+
+    n_batches = user1_train_data.size(0)
+
+    n_fixed = 5
+    fixed_src = user1_train_data[0,:,:n_fixed]
+    fixed_lens = user1_train_lens[0,:n_fixed]
+
+    print("Starting Training Loop...")
+    for epoch in range(n_epochs):
+        for batch_idx in range(n_batches):
+            ##############################################################
+            #                   Update Discriminator                     #
+            ##############################################################
+            ## Train on real Sanders tweets
+
+            user1_src = user1_train_data[batch_idx]
+            user1_lens = user1_train_lens[batch_idx]
+
+            user2_src = user2_train_data[batch_idx]
+            user2_lens = user2_train_lens[batch_idx]
+
+            discriminator.zero_grad()
+
+            label = torch.full((batch_size,), real_label, dtype=torch.float, device=device)
+            output = discriminator(user2_src, user2_lens).view(-1)
+
+            err_discriminator_real = criterion(output, label)
+            err_discriminator_real.backward()
+            D_y = output.mean().item()
+
+            ## Train on fake Sanders tweets
+
+            fake_src, fake_lens = generator(user1_src, user1_lens)
+            label.fill_(fake_label)
+            output = discriminator(fake_src.detach(), fake_lens.detach()).view(-1)
+            err_discriminator_fake = criterion(output, label)
+            err_discriminator_fake.backward()
+            D_G_x1 = output.mean().item()
+            err_discriminator = err_discriminator_real + err_discriminator_fake
+            optimizerD.step()
+
+            ##############################################################
+            #                     Update Generator                       #
+            ##############################################################
+
+            generator.zero_grad()
+            label.fill_(real_label)
+            output = discriminator(fake_src, fake_lens).view(-1)
+            err_generator = criterion(output, label)
+            err_generator.backward()
+            D_G_x2 = output.mean().item()
+            optimizerG.step()
+
+            ##############################################################
+            #                   Output Training Stats                    #
+            ##############################################################
+
+            if batch_idx % 20 == 0 or batch_idx == n_batches-1:
+                print('[%d/%d][%d/%d]\tLoss_D: %.4f\tLoss_G: %.4f\tD(y): '
+                      '%.4f\tD(G(x)): %.4f / %.4f' % (epoch, n_epochs, batch_idx, n_batches, err_discriminator.item(),
+                                                      err_generator.item(), D_y, D_G_x1, D_G_x2))
+
+            # Save losses for plotting
+            G_losses.append(err_generator.item())
+            D_losses.append(err_discriminator.item())
+
+            iters += 1
+
+        with torch.no_grad():
+            fake_src, fake_lens = generator(fixed_src, fixed_lens)
+        tweets_list.append(tokens_to_sentences(fake_src, fake_lens, user2_vocab_itos))
+
+    ########### show translation evolution ###########
+
+    print('=' * 100)
+    print('Source tweets examples')
+    print('=' * 100)
+
+    fixed_sentences = tokens_to_sentences(fixed_src, fixed_lens, user1_vocab_itos)
+    for sentence in fixed_sentences:
+        print(" ".join(sentence))
+    print('='*100)
+
+    print('=' * 100)
+    print('Translated tweets examples')
+    print('=' * 100)
+
+    for epoch, sentences in enumerate(tweets_list):
+        print('epoch:', epoch)
+        for sentence in sentences:
+            print(" ".join(sentence))
+        print('='*100)
+
+    ################## plot results ##################
+
+    plt.figure(figsize=(10, 5))
+    plt.title("Generator and Discriminator Loss During Training")
+    plt.plot(G_losses, label="G")
+    plt.plot(D_losses, label="D")
+    plt.xlabel("iterations")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.savefig('images/' + model_name + '_results.eps', format='eps', dpi=1200)
 
     ################ saving the model ################
 
