@@ -369,8 +369,8 @@ def train_model(model_name, user_A, user_B, n_epochs, decay_epoch, device):
     betas = (0.5, 0.999)
 
     optimizer_G = torch.optim.Adam(itertools.chain(netG_A2B.parameters(), netG_B2A.parameters()), lr=lr, betas=betas)
-    optimizer_D_A = torch.optim.Adam(netD_A.parameters(), lr=lr, betas=betas)
-    optimizer_D_B = torch.optim.Adam(netD_B.parameters(), lr=lr, betas=betas)
+    optimizer_D_A = torch.optim.Adam(netD_A.parameters(), lr=lr/10, betas=betas)
+    optimizer_D_B = torch.optim.Adam(netD_B.parameters(), lr=lr/10, betas=betas)
 
     lr_scheduler_G = torch.optim.lr_scheduler.LambdaLR(optimizer_G, lr_lambda=LambdaLR(n_epochs, decay_epoch).step)
     lr_scheduler_D_A = torch.optim.lr_scheduler.LambdaLR(optimizer_D_A, lr_lambda=LambdaLR(n_epochs, decay_epoch).step)
@@ -402,6 +402,16 @@ def train_model(model_name, user_A, user_B, n_epochs, decay_epoch, device):
 
     G_losses = []
     D_losses = []
+
+    D_x_list = []
+    D_G_x_list = []
+
+    loss_identity_list = []
+    loss_GAN_list = []
+    loss_cycle_list = []
+
+    loss_D_real_list = []
+    loss_D_fake_list = []
 
     # Training
     print("Starting Training Loop...")
@@ -454,6 +464,10 @@ def train_model(model_name, user_A, user_B, n_epochs, decay_epoch, device):
 
             optimizer_G.step()
 
+            loss_identity = loss_identity_A + loss_identity_B
+            loss_GAN = loss_GAN_A2B + loss_GAN_B2A
+            loss_cycle = loss_cycle_ABA + loss_cycle_BAB
+
             ##############################################################
             #                   Update Discriminator A                   #
             ##############################################################
@@ -478,6 +492,9 @@ def train_model(model_name, user_A, user_B, n_epochs, decay_epoch, device):
             loss_D_A.backward()
 
             optimizer_D_A.step()
+
+            loss_D_A_real = loss_D_real
+            loss_D_A_fake = loss_D_fake
 
             ##############################################################
             #                   Update Discriminator B                   #
@@ -504,6 +521,12 @@ def train_model(model_name, user_A, user_B, n_epochs, decay_epoch, device):
 
             optimizer_D_B.step()
 
+            loss_D_B_real = loss_D_real
+            loss_D_B_fake = loss_D_fake
+
+            loss_D_real = loss_D_A_real + loss_D_B_real
+            loss_D_fake = loss_D_A_fake + loss_D_B_fake
+
             ##############################################################
             #                   Output Training Stats                    #
             ##############################################################
@@ -520,6 +543,16 @@ def train_model(model_name, user_A, user_B, n_epochs, decay_epoch, device):
 
             D_losses.append(loss_D.item())
             G_losses.append(loss_G.item())
+
+            D_x_list.append(D_x)
+            D_G_x_list.append(D_G_x)
+
+            loss_identity_list.append(loss_identity.item())
+            loss_GAN_list.append(loss_GAN.item())
+            loss_cycle_list.append(loss_cycle.item())
+
+            loss_D_real_list.append(loss_D_real.item())
+            loss_D_fake_list.append(loss_D_fake.item())
 
         # Update learning rates
         lr_scheduler_G.step()
@@ -579,13 +612,47 @@ def train_model(model_name, user_A, user_B, n_epochs, decay_epoch, device):
     ################## plot results ##################
 
     plt.figure(figsize=(10, 5))
-    plt.title("Generator and Discriminator Loss During Training")
-    plt.plot(G_losses, label="Generator")
-    plt.plot(D_losses, label="Discriminator")
+    plt.title("Generators and Discriminators Loss During Training")
+    plt.plot(G_losses, label="Generators")
+    plt.plot(D_losses, label="Discriminators")
     plt.xlabel("iterations")
     plt.ylabel("Loss")
     plt.legend()
-    plt.savefig('images/' + model_name + '_results.eps', format='eps', dpi=1200)
+    plt.savefig('images/' + model_name + '_losses.eps', format='eps', dpi=1200)
+
+    plt.clf()
+
+    plt.figure(figsize=(10, 5))
+    plt.title("Discriminators Frequency of Predicting \"Real\" During Training")
+    plt.plot(D_x_list, label="Real Data")
+    plt.plot(D_G_x_list, label="False Data")
+    plt.xlabel("iterations")
+    plt.ylabel("Frequency")
+    plt.legend()
+    plt.savefig('images/' + model_name + '_discriminators_frequencies.eps', format='eps', dpi=1200)
+
+    plt.clf()
+
+    plt.figure(figsize=(10, 5))
+    plt.title("Identity, Cycle, and GAN Loss During Generators Training")
+    plt.plot(loss_identity_list, label="Identity Loss")
+    plt.plot(loss_cycle_list, label="Cycle Loss")
+    plt.plot(loss_GAN_list, label="GAN Loss")
+    plt.xlabel("iterations")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.savefig('images/' + model_name + '_generators_loss.eps', format='eps', dpi=1200)
+
+    plt.clf()
+
+    plt.figure(figsize=(10, 5))
+    plt.title("Discriminator GAN Loss in Real and Fake Data during Training")
+    plt.plot(loss_D_real_list, label="Real Data")
+    plt.plot(loss_D_fake_list, label="Fake Data")
+    plt.xlabel("iterations")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.savefig('images/' + model_name + '_discriminators_loss.eps', format='eps', dpi=1200)
 
     ################ saving the model ################
 
