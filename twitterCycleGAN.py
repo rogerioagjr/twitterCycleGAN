@@ -411,13 +411,13 @@ def train_model(model_name, user1, user2, device):
 
     generator_kwargs = {'input_vocab_size': user1_vocab_size, 'output_vocab_size': user2_vocab_size,
                     'embedded_size': embedded_size, 'n_heads': n_heads, 'n_hidden': n_hidden, 'n_layers': n_layers,
-                    'dropout': dropout, 'device': device}
+                    'dropout': dropout}
 
     save_model(model_name + '_generator', generator_params, generator_kwargs)
 
     discriminator_params = discriminator.state_dict()
 
-    discriminator_kwargs = {'vocab_size':user2_vocab_size, 'device': device}
+    discriminator_kwargs = {'vocab_size':user2_vocab_size}
 
     save_model(model_name + '_discriminator', discriminator_params, discriminator_kwargs)
 
