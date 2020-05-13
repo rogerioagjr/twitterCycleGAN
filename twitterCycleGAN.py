@@ -328,7 +328,7 @@ def train_model(model_name, user_A, user_B, n_epochs, decay_epoch, device):
     G_n_layers = 6
     G_dropout = 0.1
 
-    shared_encoder = nn.Embedding(vocab_size, G_embedded_size, padding_idx=0)
+    shared_encoder = nn.Embedding(vocab_size, G_embedded_size, padding_idx=0).to(device)
 
     netG_A2B = Generator(input_vocab_size=vocab_size, output_vocab_size=vocab_size, embedded_size=G_embedded_size,
                          n_heads=G_n_heads, n_hidden=G_n_hidden, n_layers=G_n_layers, dropout=G_dropout,
