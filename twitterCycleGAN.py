@@ -181,7 +181,7 @@ def tokens_to_sentences(src, src_lens, vocab_itos):
         sentences.append(sentence)
     return sentences
 
-def train_model(model_name, user1, user2, device):
+def train_model(model_name, user1, user2, n_epochs, device):
 
     ################### prepare the data ###################
 
@@ -284,7 +284,6 @@ def train_model(model_name, user1, user2, device):
 
     ################# training loop #################
 
-    n_epochs = 3
     lr = 0.0002
     beta1 = 0.5
 
@@ -553,8 +552,9 @@ if __name__ == "__main__":
     mode = sys.argv[1]
 
     if mode == 'train':
-        model_name, user1, user2 = sys.argv[2], sys.argv[3], sys.argv[4]
-        discriminator, generator = train_model(model_name=model_name, user1=user1, user2=user2, device=device)
+        model_name, user1, user2, n_epochs = sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+        discriminator, generator = train_model(model_name=model_name, user1=user1, user2=user2,
+                                               n_epochs=n_epochs, device=device)
 
     if mode == 'test':
         model_name = sys.argv[2]
