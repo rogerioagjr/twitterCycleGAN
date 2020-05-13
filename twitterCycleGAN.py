@@ -132,8 +132,8 @@ class Generator(nn.Module):
 
 class Discriminator(nn.Module):
 
-    def __init__(self, vocab_size, embedded_size=200, n_heads=2, n_hidden=200, n_layers=2,
-                 dropout=0.2, max_len=50, device=torch.device('cuda'), pad=0):
+    def __init__(self, vocab_size, embedded_size=32, n_heads=1, n_hidden=64, n_layers=1,
+                 dropout=0.1, max_len=50, device=torch.device('cuda'), pad=0):
         super(Discriminator, self).__init__()
         self.device = device
         self.embedded_size = embedded_size
@@ -345,16 +345,13 @@ def train_model(model_name, user1, user2, n_epochs, device):
             #                     Update Generator                       #
             ##############################################################
 
+            generator.zero_grad()
             label.fill_(real_label)
-
-            for i in range(10):
-                generator.zero_grad()
-                fake_src, fake_lens = generator(user1_src, user1_lens)
-                output = discriminator(fake_src, fake_lens).view(-1)
-                err_generator = criterion(output, label)
-                err_generator.backward()
-                D_G_x2 = output.mean().item()
-                optimizerG.step()
+            output = discriminator(fake_src, fake_lens).view(-1)
+            err_generator = criterion(output, label)
+            err_generator.backward()
+            D_G_x2 = output.mean().item()
+            optimizerG.step()
 
             ##############################################################
             #                   Output Training Stats                    #
