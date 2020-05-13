@@ -316,6 +316,9 @@ def train_model(model_name, user_A, user_B, n_epochs, decay_epoch, device):
      B_train_lens, B_val_lens, B_test_lens) = prepare_data(user_B, batch_size=batch_size, max_len=max_len,
                                                            vocab_itos=vocab_itos, vocab_stoi=vocab_stoi, device=device)
 
+    A_train_data = A_train_data.to(device)
+    B_train_data = B_train_data.to(device)
+
     n_batches = A_train_data.size(0)
 
     vocab_size = len(vocab_itos)
