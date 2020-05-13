@@ -271,9 +271,9 @@ def train_model(model_name, user1, user2, n_epochs, device):
     user1_vocab_size = len(user1_vocab_itos)
     user2_vocab_size = len(user2_vocab_itos)
 
-    embedded_size = 512
+    embedded_size = 256
     n_heads = 8
-    n_hidden = 2048
+    n_hidden = 1024
     n_layers = 6
     dropout = 0.1
 
