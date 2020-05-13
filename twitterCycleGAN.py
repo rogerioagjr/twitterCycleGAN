@@ -298,7 +298,7 @@ def train_model(model_name, user1, user2, n_epochs, device):
 
     criterion = nn.BCELoss()
 
-    optimizerD = torch.optim.Adam(discriminator.parameters(), lr=lr, betas=(beta1, 0.999))
+    optimizerD = torch.optim.Adam(discriminator.parameters(), lr=lr/5, betas=(beta1, 0.999))
     optimizerG = torch.optim.Adam(generator.parameters(), lr=lr, betas=(beta1, 0.999))
 
     n_batches = user1_train_data.size(0)
