@@ -760,7 +760,6 @@ def prepare_user_data(user, n_tweets):
 if __name__ == "__main__":
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    device = torch.device(device)
     print('device is:', device)
 
     # Set random seed for reproducibility
