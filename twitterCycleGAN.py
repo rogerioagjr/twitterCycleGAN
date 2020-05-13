@@ -271,11 +271,11 @@ def train_model(model_name, user1, user2, n_epochs, device):
     user1_vocab_size = len(user1_vocab_itos)
     user2_vocab_size = len(user2_vocab_itos)
 
-    embedded_size = 200
-    n_heads = 2
-    n_hidden = 200
-    n_layers = 2
-    dropout = 0.2
+    embedded_size = 512
+    n_heads = 8
+    n_hidden = 2048
+    n_layers = 6
+    dropout = 0.1
 
     generator = Generator(user1_vocab_size, user2_vocab_size, embedded_size, n_heads,
                         n_hidden, n_layers, dropout, device=device).to(device)
@@ -345,13 +345,16 @@ def train_model(model_name, user1, user2, n_epochs, device):
             #                     Update Generator                       #
             ##############################################################
 
-            generator.zero_grad()
             label.fill_(real_label)
-            output = discriminator(fake_src, fake_lens).view(-1)
-            err_generator = criterion(output, label)
-            err_generator.backward()
-            D_G_x2 = output.mean().item()
-            optimizerG.step()
+
+            for i in range(10):
+                generator.zero_grad()
+                fake_src, fake_lens = generator(user1_src, user1_lens)
+                output = discriminator(fake_src, fake_lens).view(-1)
+                err_generator = criterion(output, label)
+                err_generator.backward()
+                D_G_x2 = output.mean().item()
+                optimizerG.step()
 
             ##############################################################
             #                   Output Training Stats                    #
