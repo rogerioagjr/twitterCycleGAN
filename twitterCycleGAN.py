@@ -552,7 +552,7 @@ if __name__ == "__main__":
     mode = sys.argv[1]
 
     if mode == 'train':
-        model_name, user1, user2, n_epochs = sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+        model_name, user1, user2, n_epochs = sys.argv[2], sys.argv[3], sys.argv[4], str(sys.argv[5])
         discriminator, generator = train_model(model_name=model_name, user1=user1, user2=user2,
                                                n_epochs=n_epochs, device=device)
 
